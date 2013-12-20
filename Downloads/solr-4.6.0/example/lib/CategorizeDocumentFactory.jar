@@ -1,0 +1,95 @@
+package org.apache.solr.update.processor.ext;
+ 
+import java.io.IOException;
+import java.util.ArrayList;
+import java.io.StringReader;
+import java.io.File;
+ 
+import org.apache.solr.common.SolrInputDocument;
+import org.apache.solr.common.SolrInputField;
+import org.apache.solr.common.params.SolrParams;
+import org.apache.solr.request.SolrQueryRequest;
+import org.apache.solr.response.SolrQueryResponse;
+import org.apache.solr.update.AddUpdateCommand;
+import org.apache.solr.update.processor.UpdateRequestProcessor;
+import org.apache.solr.update.processor.UpdateRequestProcessorFactory;
+import org.apache.solr.common.util.NamedList;
+ 
+import org.apache.lucene.util.Version;
+import org.apache.lucene.util.Version.*;
+import org.apache.lucene.analysis.standard.StandardAnalyzer;
+import org.apache.lucene.analysis.TokenStream;
+import org.apache.lucene.analysis.tokenattributes.TermAttribute;
+ 
+//mahout
+import org.apache.mahout.classifier.bayes.model.ClassifierContext;
+import org.apache.mahout.classifier.bayes.datastore.InMemoryBayesDatastore;
+import org.apache.mahout.classifier.bayes.interfaces.Datastore;
+import org.apache.mahout.classifier.bayes.interfaces.Algorithm;
+ 
+import org.apache.mahout.classifier.bayes.algorithm.BayesAlgorithm;
+import org.apache.mahout.classifier.ClassifierResult;
+import org.apache.mahout.classifier.bayes.common.BayesParameters;
+ 
+public class CategorizeDocumentFactory extends UpdateRequestProcessorFactory
+{
+  SolrParams params;
+  ClassifierContext ctx;
+  public void init( NamedList args )
+  {
+    params = SolrParams.toSolrParams((NamedList) args);
+    BayesParameters p = new BayesParameters();
+    String modelPath = params.get("model");
+    p.setBasePath(modelPath);
+    InMemoryBayesDatastore ds = new InMemoryBayesDatastore(p);
+    Algorithm alg = new BayesAlgorithm();
+    ClassifierContext ctx = new ClassifierContext(alg,ds);
+    try {
+       ctx.initialize();
+    } 
+    catch(Exception e1){
+    }
+  }
+  @Override
+  public UpdateRequestProcessor getInstance(SolrQueryRequest req, SolrQueryResponse rsp, UpdateRequestProcessor next)
+  {
+    return new CategorizeDocument(next);
+  }
+ 
+ 
+  public class CategorizeDocument extends UpdateRequestProcessor
+    {
+      public CategorizeDocument( UpdateRequestProcessor next) {
+        super( next );
+      }
+ 
+      @Override
+      public void processAdd(AddUpdateCommand cmd) throws IOException {
+        try{            
+            SolrInputDocument doc = cmd.getSolrInputDocument();
+            String inputField = params.get("inputField");
+            String outputField = params.get("outputField");
+            String input = (String) doc.getFieldValue(inputField);
+            ArrayList<String> tokenList = new ArrayList<String>(256);
+            StandardAnalyzer analyzer = new StandardAnalyzer(Version.LUCENE_30);
+            TokenStream ts = analyzer.tokenStream(inputField, new StringReader(input));
+            while (ts.incrementToken()) {
+                tokenList.add(ts.getAttribute(TermAttribute.class).toString());
+            }
+            String[] tokens = tokenList.toArray(new String[tokenList.size()]);
+            //Call the mahout classification process
+            ClassifierResult result = ctx.classifyDocument(tokens, "Others");
+            if (result != null && result.getLabel() != "") {
+              doc.addField(outputField, result.getLabel());
+            }
+         }
+         catch(IOException e1){
+           e1.printStackTrace();
+         }
+         catch(Exception e){
+           e.printStackTrace();
+         }
+        super.processAdd(cmd);
+      }
+    }
+}
